@@ -413,7 +413,7 @@ def write_data_in_chunks(writer, df, stagione, data_inizio, data_fine, ricarico)
         )
 
 
-st.title("Asics Xmag Lineare")
+st.title("Pkg Asics Xmag Lineare")
 
 stagione = st.text_input("Inserisci STAGIONE")
 data_inizio = st.date_input("Inserisci DATA INIZIO")
