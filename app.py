@@ -34,6 +34,12 @@ def format_taglia(size_us):
     return size_str.replace(".5", "+")
 
 
+def clean_description(value):
+    if pd.isna(value):
+        return ""
+    return str(value).split(",")[0].strip()
+
+
 def clean_price_value(value):
     if pd.isna(value) or str(value).strip() == "":
         return 0.0
@@ -324,7 +330,7 @@ def process_file(file, memory_dict, ricarico_value):
 
     output_df = pd.DataFrame({
         "Articolo": df["Item Code"].astype(str).str.strip(),
-        "Descrizione": df["Item Description"].fillna("").astype(str).str.strip(),
+        "Descrizione": df["Item Description"].apply(clean_description),
         "Categoria": "CALZATURE",
         "Subcategoria": "Sneakers",
         "Colore": df["Color Code"].astype(str).str.strip().str.zfill(3),
@@ -413,7 +419,7 @@ def write_data_in_chunks(writer, df, stagione, data_inizio, data_fine, ricarico)
         )
 
 
-st.title("Pkg Asics Xmag Lineare")
+st.title("Asics Xmag Lineare")
 
 stagione = st.text_input("Inserisci STAGIONE")
 data_inizio = st.date_input("Inserisci DATA INIZIO")
