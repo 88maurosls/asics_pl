@@ -36,22 +36,12 @@ def format_taglia(size_us):
 
 def clean_price_value(value):
     if pd.isna(value) or str(value).strip() == "":
-        return ""
+        return 0.0
     s = str(value).strip().replace("€", "").replace(",", ".")
     try:
         return float(s)
     except ValueError:
-        return ""
-
-
-def expand_rows(df):
-    df = df.copy()
-    df["Qta"] = pd.to_numeric(df["Qta"], errors="coerce").fillna(0).astype(int)
-    df = df[df["Qta"] > 0]
-
-    expanded_df = df.loc[df.index.repeat(df["Qta"])].assign(Qta=1)
-    expanded_df["Tot Costo"] = expanded_df["Costo"]
-    return expanded_df
+        return None
 
 
 def connect_to_gsheet():
@@ -88,11 +78,12 @@ def get_or_create_gender_worksheet(sheet_url):
         worksheet.append_row(["Articolo", "Colore", "Gender", "Base Color", "Price"])
 
     existing_values = worksheet.get_all_values()
+    expected_header = ["Articolo", "Colore", "Gender", "Base Color", "Price"]
+
     if not existing_values:
-        worksheet.append_row(["Articolo", "Colore", "Gender", "Base Color", "Price"])
+        worksheet.append_row(expected_header)
     else:
         header = existing_values[0]
-        expected_header = ["Articolo", "Colore", "Gender", "Base Color", "Price"]
         if header[:5] != expected_header:
             worksheet.update("A1:E1", [expected_header])
 
@@ -203,6 +194,77 @@ def build_unique_combinations(uploaded_files):
     return unique_combinations
 
 
+def aggregate_rows_by_barcode(df):
+    df = df.copy()
+
+    df["Barcode"] = df["Barcode"].fillna("").astype(str).str.strip()
+    df["Qta"] = pd.to_numeric(df["Qta"], errors="coerce").fillna(0)
+    df["Costo"] = pd.to_numeric(df["Costo"], errors="coerce").fillna(0)
+
+    df = df[df["Qta"] > 0]
+    df = df[df["Barcode"] != ""]
+
+    aggregated = (
+        df.groupby("Barcode", as_index=False, dropna=False)
+        .agg({
+            "Articolo": "first",
+            "Descrizione": "first",
+            "Categoria": "first",
+            "Subcategoria": "first",
+            "Colore": "first",
+            "Base Color": "first",
+            "Made in": "first",
+            "Sigla Bimbo": "first",
+            "Costo": "first",
+            "Retail": "first",
+            "Taglia": "first",
+            "EAN": "first",
+            "Qta": "sum",
+            "Materiale": "first",
+            "Spec. Materiale": "first",
+            "Misure": "first",
+            "Scala Taglie": "first",
+            "Tacco": "first",
+            "Suola": "first",
+            "Carryover": "first",
+            "HS Code": "first"
+        })
+    )
+
+    aggregated["Qta"] = aggregated["Qta"].astype(int)
+    aggregated["Tot Costo"] = aggregated["Costo"] * aggregated["Qta"]
+
+    aggregated = aggregated[
+        [
+            "Articolo",
+            "Descrizione",
+            "Categoria",
+            "Subcategoria",
+            "Colore",
+            "Base Color",
+            "Made in",
+            "Sigla Bimbo",
+            "Costo",
+            "Retail",
+            "Taglia",
+            "Barcode",
+            "EAN",
+            "Qta",
+            "Tot Costo",
+            "Materiale",
+            "Spec. Materiale",
+            "Misure",
+            "Scala Taglie",
+            "Tacco",
+            "Suola",
+            "Carryover",
+            "HS Code"
+        ]
+    ]
+
+    return aggregated
+
+
 def process_file(file, memory_dict):
     df = read_delivery_items(file)
 
@@ -216,14 +278,18 @@ def process_file(file, memory_dict):
 
     for key in keys:
         row_data = memory_dict.get(key, {})
-        remembered_base_color = row_data.get("base_color", "")
-        remembered_price = row_data.get("price", "")
 
+        remembered_base_color = row_data.get("base_color", "")
         if remembered_base_color not in BASE_COLOR_OPTIONS:
             remembered_base_color = ""
 
+        remembered_price = row_data.get("price", "")
+        parsed_price = clean_price_value(remembered_price)
+        if parsed_price is None:
+            parsed_price = 0.0
+
         base_colors.append("" if remembered_base_color == "Seleziona..." else remembered_base_color)
-        prices.append(clean_price_value(remembered_price))
+        prices.append(parsed_price)
 
     output_df = pd.DataFrame({
         "Articolo": df["Item Code"].astype(str).str.strip(),
@@ -240,7 +306,7 @@ def process_file(file, memory_dict):
         "Barcode": df["EAN Code"].fillna("").astype(str).str.strip(),
         "EAN": "",
         "Qta": pd.to_numeric(df["Delivery qty."], errors="coerce").fillna(0).astype(int),
-        "Tot Costo": "",
+        "Tot Costo": 0,
         "Materiale": "",
         "Spec. Materiale": "",
         "Misure": "",
@@ -252,8 +318,8 @@ def process_file(file, memory_dict):
     })
 
     output_df = output_df[output_df["Qta"] > 0]
-    expanded_df = expand_rows(output_df)
-    return expanded_df
+    aggregated_df = aggregate_rows_by_barcode(output_df)
+    return aggregated_df
 
 
 def write_data_in_chunks(writer, df, stagione, data_inizio, data_fine, ricarico):
@@ -287,9 +353,9 @@ def write_data_in_chunks(writer, df, stagione, data_inizio, data_fine, ricarico)
         worksheet.set_column("C:C", 15)
         worksheet.set_column("D:D", 18)
         worksheet.set_column("E:E", 12)
-        worksheet.set_column("F:F", 15)
+        worksheet.set_column("F:F", 18)
         worksheet.set_column("G:G", 12)
-        worksheet.set_column("H:H", 15)
+        worksheet.set_column("H:H", 12)
         worksheet.set_column("I:I", 12, number_format)
         worksheet.set_column("J:J", 12)
         worksheet.set_column("K:K", 10)
@@ -297,6 +363,7 @@ def write_data_in_chunks(writer, df, stagione, data_inizio, data_fine, ricarico)
         worksheet.set_column("M:M", 12)
         worksheet.set_column("N:N", 10)
         worksheet.set_column("O:O", 12, number_format)
+        worksheet.set_column("P:W", 15)
 
         last_data_row = len(chunk_df) + start_row
         empty_row = last_data_row + 1
@@ -306,10 +373,13 @@ def write_data_in_chunks(writer, df, stagione, data_inizio, data_fine, ricarico)
         total_row = empty_row + 2
         worksheet.write_formula(
             f"N{total_row}",
-            f"=SUM(N{start_row+2}:N{last_data_row + 1})",
+            f"=SUM(N{start_row+2}:N{last_data_row + 1})"
+        )
+        worksheet.write_formula(
+            f"O{total_row}",
+            f"=SUM(O{start_row+2}:O{last_data_row + 1})",
             number_format
         )
-        worksheet.write(f"O{total_row}", "")
 
 
 st.title("Asics Xmag Lineare")
@@ -390,7 +460,7 @@ if uploaded_files and stagione and data_inizio and data_fine:
         invalid_prices = []
         for (articolo, colore), values in selections.items():
             cleaned = clean_price_value(values["price"])
-            if values["price"] != "" and cleaned == "":
+            if values["price"] != "" and cleaned is None:
                 invalid_prices.append(f"{articolo}-{colore}")
 
         if invalid_prices:
@@ -419,13 +489,23 @@ if uploaded_files and stagione and data_inizio and data_fine:
         final_df = pd.concat(processed_dfs, ignore_index=True)
 
         uomo_df = final_df[
-            final_df.apply(lambda x: selections[(x["Articolo"], x["Colore"])]["gender"] == "UOMO", axis=1)
-        ]
+            final_df["Articolo"] + "-" + final_df["Colore"]
+        ].copy()
         donna_df = final_df[
-            final_df.apply(lambda x: selections[(x["Articolo"], x["Colore"])]["gender"] == "DONNA", axis=1)
-        ]
+            final_df["Articolo"] + "-" + final_df["Colore"]
+        ].copy()
         unisex_df = final_df[
-            final_df.apply(lambda x: selections[(x["Articolo"], x["Colore"])]["gender"] == "UNISEX", axis=1)
+            final_df["Articolo"] + "-" + final_df["Colore"]
+        ].copy()
+
+        uomo_df = uomo_df[
+            uomo_df.apply(lambda x: selections.get((x["Articolo"], x["Colore"]), {}).get("gender") == "UOMO", axis=1)
+        ]
+        donna_df = donna_df[
+            donna_df.apply(lambda x: selections.get((x["Articolo"], x["Colore"]), {}).get("gender") == "DONNA", axis=1)
+        ]
+        unisex_df = unisex_df[
+            unisex_df.apply(lambda x: selections.get((x["Articolo"], x["Colore"]), {}).get("gender") == "UNISEX", axis=1)
         ]
 
         uomo_output = io.BytesIO()
