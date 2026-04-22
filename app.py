@@ -489,24 +489,25 @@ if uploaded_files and stagione and data_inizio and data_fine:
         final_df = pd.concat(processed_dfs, ignore_index=True)
 
         uomo_df = final_df[
-            final_df["Articolo"] + "-" + final_df["Colore"]
+            final_df.apply(
+                lambda x: selections.get((x["Articolo"], x["Colore"]), {}).get("gender") == "UOMO",
+                axis=1
+            )
         ].copy()
+        
         donna_df = final_df[
-            final_df["Articolo"] + "-" + final_df["Colore"]
+            final_df.apply(
+                lambda x: selections.get((x["Articolo"], x["Colore"]), {}).get("gender") == "DONNA",
+                axis=1
+            )
         ].copy()
+        
         unisex_df = final_df[
-            final_df["Articolo"] + "-" + final_df["Colore"]
+            final_df.apply(
+                lambda x: selections.get((x["Articolo"], x["Colore"]), {}).get("gender") == "UNISEX",
+                axis=1
+            )
         ].copy()
-
-        uomo_df = uomo_df[
-            uomo_df.apply(lambda x: selections.get((x["Articolo"], x["Colore"]), {}).get("gender") == "UOMO", axis=1)
-        ]
-        donna_df = donna_df[
-            donna_df.apply(lambda x: selections.get((x["Articolo"], x["Colore"]), {}).get("gender") == "DONNA", axis=1)
-        ]
-        unisex_df = unisex_df[
-            unisex_df.apply(lambda x: selections.get((x["Articolo"], x["Colore"]), {}).get("gender") == "UNISEX", axis=1)
-        ]
 
         uomo_output = io.BytesIO()
         donna_output = io.BytesIO()
