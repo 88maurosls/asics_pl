@@ -54,6 +54,18 @@ def clean_multiplier_value(value):
         return None
 
 
+def map_country_of_origin(value):
+    if pd.isna(value):
+        return ""
+    v = str(value).strip().upper()
+    mapping = {
+        "VN": "Vietnam",
+        "ID": "Indonesia",
+        "KH": "Cambodia"
+    }
+    return mapping.get(v, "")
+
+
 def connect_to_gsheet():
     credentials = {
         "type": st.secrets["gsheet"]["type"],
@@ -175,7 +187,8 @@ def read_delivery_items(file):
         "US Size",
         "EAN Code",
         "Item Description",
-        "Delivery qty."
+        "Delivery qty.",
+        "Country of Origin"
     ]
 
     missing_columns = [col for col in required_columns if col not in df.columns]
@@ -287,8 +300,9 @@ def process_file(file, memory_dict, ricarico_value):
     base_colors = []
     prices = []
     retails = []
+    made_in_values = []
 
-    for key in keys:
+    for idx, key in enumerate(keys):
         row_data = memory_dict.get(key, {})
 
         remembered_base_color = row_data.get("base_color", "")
@@ -301,10 +315,12 @@ def process_file(file, memory_dict, ricarico_value):
             parsed_price = 0.0
 
         retail_value = parsed_price * ricarico_value
+        made_in_value = map_country_of_origin(df.iloc[idx]["Country of Origin"])
 
         base_colors.append("" if remembered_base_color == "Seleziona..." else remembered_base_color)
         prices.append(parsed_price)
         retails.append(retail_value)
+        made_in_values.append(made_in_value)
 
     output_df = pd.DataFrame({
         "Articolo": df["Item Code"].astype(str).str.strip(),
@@ -313,7 +329,7 @@ def process_file(file, memory_dict, ricarico_value):
         "Subcategoria": "Sneakers",
         "Colore": df["Color Code"].astype(str).str.strip().str.zfill(3),
         "Base Color": base_colors,
-        "Made in": "",
+        "Made in": made_in_values,
         "Sigla Bimbo": "",
         "Costo": prices,
         "Retail": retails,
@@ -369,7 +385,7 @@ def write_data_in_chunks(writer, df, stagione, data_inizio, data_fine, ricarico)
         worksheet.set_column("D:D", 18)
         worksheet.set_column("E:E", 12)
         worksheet.set_column("F:F", 18)
-        worksheet.set_column("G:G", 12)
+        worksheet.set_column("G:G", 15)
         worksheet.set_column("H:H", 12)
         worksheet.set_column("I:I", 12, number_format)
         worksheet.set_column("J:J", 12, number_format)
