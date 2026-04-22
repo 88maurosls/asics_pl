@@ -4,7 +4,27 @@ import io
 import gspread
 from google.oauth2.service_account import Credentials
 
-# Funzione per formattare la colonna Taglia
+# Opzioni fisse
+GENDER_OPTIONS = ["Seleziona...", "UOMO", "DONNA", "UNISEX"]
+BASE_COLOR_OPTIONS = [
+    "Seleziona...",
+    "Black",
+    "Blue",
+    "Brown",
+    "Green",
+    "Grey",
+    "Metallic",
+    "Multicolour",
+    "Nude & Neutrals",
+    "Pink & Purple",
+    "Red",
+    "White",
+    "Yellow & Orange"
+]
+
+GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1p84nF9Tq-1ZJgQSEJcgrePLvQyGQ3cjt_1IZP5qPs00/edit?usp=sharing"
+
+
 def format_taglia(size_us):
     if pd.isna(size_us):
         return ""
@@ -13,7 +33,7 @@ def format_taglia(size_us):
         size_str = size_str[:-2]
     return size_str.replace(".5", "+")
 
-# Funzione per pulire il prezzo
+
 def clean_price_value(value):
     if pd.isna(value) or str(value).strip() == "":
         return ""
@@ -23,7 +43,7 @@ def clean_price_value(value):
     except ValueError:
         return ""
 
-# Funzione per duplicare le righe in base al valore di Qta
+
 def expand_rows(df):
     df = df.copy()
     df["Qta"] = pd.to_numeric(df["Qta"], errors="coerce").fillna(0).astype(int)
@@ -33,7 +53,7 @@ def expand_rows(df):
     expanded_df["Tot Costo"] = expanded_df["Costo"]
     return expanded_df
 
-# Connessione a Google Sheets
+
 def connect_to_gsheet():
     credentials = {
         "type": st.secrets["gsheet"]["type"],
@@ -56,12 +76,31 @@ def connect_to_gsheet():
     client = gspread.authorize(creds)
     return client
 
-# Recupera dati esistenti dal foglio Gender
-def get_existing_data(sheet_url):
+
+def get_or_create_gender_worksheet(sheet_url):
     client = connect_to_gsheet()
     sheet = client.open_by_url(sheet_url)
-    worksheet = sheet.worksheet("Gender")
 
+    try:
+        worksheet = sheet.worksheet("Gender")
+    except gspread.WorksheetNotFound:
+        worksheet = sheet.add_worksheet(title="Gender", rows=1000, cols=5)
+        worksheet.append_row(["Articolo", "Colore", "Gender", "Base Color", "Price"])
+
+    existing_values = worksheet.get_all_values()
+    if not existing_values:
+        worksheet.append_row(["Articolo", "Colore", "Gender", "Base Color", "Price"])
+    else:
+        header = existing_values[0]
+        expected_header = ["Articolo", "Colore", "Gender", "Base Color", "Price"]
+        if header[:5] != expected_header:
+            worksheet.update("A1:E1", [expected_header])
+
+    return worksheet
+
+
+def get_existing_data(sheet_url):
+    worksheet = get_or_create_gender_worksheet(sheet_url)
     data = worksheet.get_all_values()
 
     result = {}
@@ -81,12 +120,9 @@ def get_existing_data(sheet_url):
 
     return result
 
-# Scrive o aggiorna dati su Google Sheets
-def write_to_gsheet(data, sheet_url):
-    client = connect_to_gsheet()
-    sheet = client.open_by_url(sheet_url)
-    worksheet = sheet.worksheet("Gender")
 
+def write_to_gsheet(data, sheet_url):
+    worksheet = get_or_create_gender_worksheet(sheet_url)
     existing_data = worksheet.get_all_values()
 
     existing_entries = {
@@ -96,6 +132,7 @@ def write_to_gsheet(data, sheet_url):
     }
 
     batch_updates = []
+    rows_to_append = []
 
     for articolo, colore, gender, base_color, price in data:
         key = f"{articolo}-{colore}"
@@ -107,15 +144,18 @@ def write_to_gsheet(data, sheet_url):
                 "values": [[gender, base_color, price]]
             })
         else:
-            worksheet.append_row([articolo, colore, gender, base_color, price])
+            rows_to_append.append([articolo, colore, gender, base_color, price])
 
     if batch_updates:
         worksheet.batch_update(batch_updates)
 
+    if rows_to_append:
+        worksheet.append_rows(rows_to_append)
+
     st.success("Dati aggiornati o aggiunti su Google Sheet.")
 
-# Elabora file Excel
-def process_file(file, memory_dict):
+
+def read_delivery_items(file):
     df = pd.read_excel(
         file,
         sheet_name="Delivery Items",
@@ -142,7 +182,30 @@ def process_file(file, memory_dict):
         st.error(f"Nel file {file.name} mancano queste colonne: {missing_columns}")
         st.stop()
 
-    # Mappa Base Color e Price da memoria Google Sheet
+    return df
+
+
+def build_unique_combinations(uploaded_files):
+    preview_dfs = []
+
+    for uploaded_file in uploaded_files:
+        df_preview = read_delivery_items(uploaded_file)
+
+        temp_df = pd.DataFrame({
+            "Articolo": df_preview["Item Code"].astype(str).str.strip(),
+            "Colore": df_preview["Color Code"].astype(str).str.strip().str.zfill(3)
+        })
+
+        preview_dfs.append(temp_df)
+
+    preview_final = pd.concat(preview_dfs, ignore_index=True)
+    unique_combinations = preview_final[["Articolo", "Colore"]].drop_duplicates().reset_index(drop=True)
+    return unique_combinations
+
+
+def process_file(file, memory_dict):
+    df = read_delivery_items(file)
+
     keys = (
         df["Item Code"].astype(str).str.strip() + "-" +
         df["Color Code"].astype(str).str.strip().str.zfill(3)
@@ -153,8 +216,14 @@ def process_file(file, memory_dict):
 
     for key in keys:
         row_data = memory_dict.get(key, {})
-        base_colors.append(row_data.get("base_color", ""))
-        prices.append(clean_price_value(row_data.get("price", "")))
+        remembered_base_color = row_data.get("base_color", "")
+        remembered_price = row_data.get("price", "")
+
+        if remembered_base_color not in BASE_COLOR_OPTIONS:
+            remembered_base_color = ""
+
+        base_colors.append("" if remembered_base_color == "Seleziona..." else remembered_base_color)
+        prices.append(clean_price_value(remembered_price))
 
     output_df = pd.DataFrame({
         "Articolo": df["Item Code"].astype(str).str.strip(),
@@ -183,11 +252,10 @@ def process_file(file, memory_dict):
     })
 
     output_df = output_df[output_df["Qta"] > 0]
-
     expanded_df = expand_rows(output_df)
     return expanded_df
 
-# Scrittura Excel
+
 def write_data_in_chunks(writer, df, stagione, data_inizio, data_fine, ricarico):
     num_chunks = len(df) // 50 + (1 if len(df) % 50 > 0 else 0)
 
@@ -200,42 +268,58 @@ def write_data_in_chunks(writer, df, stagione, data_inizio, data_fine, ricarico)
 
         worksheet = writer.sheets[sheet_name]
 
-        worksheet.write('A1', 'STAGIONE:')
-        worksheet.write('B1', stagione)
-        worksheet.write('A2', 'TIPO:')
-        worksheet.write('B2', 'ACCESSORI')
-        worksheet.write('A3', 'DATA INIZIO:')
-        worksheet.write('B3', data_inizio.strftime('%d/%m/%Y'))
-        worksheet.write('A4', 'DATA FINE:')
-        worksheet.write('B4', data_fine.strftime('%d/%m/%Y'))
-        worksheet.write('A5', 'RICARICO:')
-        worksheet.write('B5', ricarico)
+        worksheet.write("A1", "STAGIONE:")
+        worksheet.write("B1", stagione)
+        worksheet.write("A2", "TIPO:")
+        worksheet.write("B2", "ACCESSORI")
+        worksheet.write("A3", "DATA INIZIO:")
+        worksheet.write("B3", data_inizio.strftime("%d/%m/%Y"))
+        worksheet.write("A4", "DATA FINE:")
+        worksheet.write("B4", data_fine.strftime("%d/%m/%Y"))
+        worksheet.write("A5", "RICARICO:")
+        worksheet.write("B5", ricarico)
 
-        text_format = writer.book.add_format({'num_format': '@'})
-        number_format = writer.book.add_format({'num_format': '#,##0.00'})
+        text_format = writer.book.add_format({"num_format": "@"})
+        number_format = writer.book.add_format({"num_format": "#,##0.00"})
 
-        worksheet.set_column('L:L', 20, text_format)
-        worksheet.set_column('I:I', 12, number_format)
-        worksheet.set_column('N:N', 12, number_format)
+        worksheet.set_column("A:A", 18)
+        worksheet.set_column("B:B", 35)
+        worksheet.set_column("C:C", 15)
+        worksheet.set_column("D:D", 18)
+        worksheet.set_column("E:E", 12)
+        worksheet.set_column("F:F", 15)
+        worksheet.set_column("G:G", 12)
+        worksheet.set_column("H:H", 15)
+        worksheet.set_column("I:I", 12, number_format)
+        worksheet.set_column("J:J", 12)
+        worksheet.set_column("K:K", 10)
+        worksheet.set_column("L:L", 20, text_format)
+        worksheet.set_column("M:M", 12)
+        worksheet.set_column("N:N", 10)
+        worksheet.set_column("O:O", 12, number_format)
 
         last_data_row = len(chunk_df) + start_row
         empty_row = last_data_row + 1
-        worksheet.write(f'N{empty_row}', "")
-        worksheet.write(f'O{empty_row}', "")
+        worksheet.write(f"N{empty_row}", "")
+        worksheet.write(f"O{empty_row}", "")
 
         total_row = empty_row + 2
-        worksheet.write_formula(f'N{total_row}', f"=SUM(N{start_row+2}:N{last_data_row + 1})", number_format)
-        worksheet.write(f'O{total_row}', "")
+        worksheet.write_formula(
+            f"N{total_row}",
+            f"=SUM(N{start_row+2}:N{last_data_row + 1})",
+            number_format
+        )
+        worksheet.write(f"O{total_row}", "")
 
-# Streamlit app
-st.title('Asics Xmag Lineare')
+
+st.title("Asics Xmag Lineare")
 
 stagione = st.text_input("Inserisci STAGIONE")
 data_inizio = st.date_input("Inserisci DATA INIZIO")
 data_fine = st.date_input("Inserisci DATA FINE")
-ricarico = st.text_input("Inserisci RICARICO", value="")
+ricarico = st.text_input("Inserisci RICARICO", value="2")
 
-st.markdown('**[Scarica le Packing List da qui](https://b2b.asics.com/orders-overview/order-history)**')
+st.markdown("**[Scarica le Packing List da qui](https://b2b.asics.com/orders-overview/order-history)**")
 
 uploaded_files = st.file_uploader(
     "Scegli i file Excel",
@@ -244,38 +328,25 @@ uploaded_files = st.file_uploader(
 )
 
 if uploaded_files and stagione and data_inizio and data_fine:
-    google_sheet_url = "https://docs.google.com/spreadsheets/d/1p84nF9Tq-1ZJgQSEJcgrePLvQyGQ3cjt_1IZP5qPs00/edit?usp=sharing"
-    memory_dict = get_existing_data(google_sheet_url)
-
-    preview_dfs = []
-    for uploaded_file in uploaded_files:
-        df_preview = pd.read_excel(
-            uploaded_file,
-            sheet_name="Delivery Items",
-            dtype={"Item Code": str, "Color Code": str}
-        )
-        df_preview.columns = df_preview.columns.astype(str).str.strip()
-
-        temp_df = pd.DataFrame({
-            "Articolo": df_preview["Item Code"].astype(str).str.strip(),
-            "Colore": df_preview["Color Code"].astype(str).str.strip().str.zfill(3)
-        })
-        preview_dfs.append(temp_df)
-
-    preview_final = pd.concat(preview_dfs, ignore_index=True)
-    unique_combinations = preview_final[["Articolo", "Colore"]].drop_duplicates()
+    memory_dict = get_existing_data(GOOGLE_SHEET_URL)
+    unique_combinations = build_unique_combinations(uploaded_files)
 
     st.write("Anteprima Articolo-Colore:")
 
     selections = {}
-    gender_options = ["Seleziona...", "UOMO", "DONNA", "UNISEX"]
 
     for index, row in unique_combinations.iterrows():
         key = f"{row['Articolo']}-{row['Colore']}"
         remembered = memory_dict.get(key, {})
 
         preselected_gender = remembered.get("gender", "Seleziona...")
-        preselected_base_color = remembered.get("base_color", "")
+        if preselected_gender not in GENDER_OPTIONS:
+            preselected_gender = "Seleziona..."
+
+        preselected_base_color = remembered.get("base_color", "Seleziona...")
+        if preselected_base_color not in BASE_COLOR_OPTIONS:
+            preselected_base_color = "Seleziona..."
+
         preselected_price = remembered.get("price", "")
 
         col1, col2, col3 = st.columns([1, 1, 1])
@@ -283,16 +354,17 @@ if uploaded_files and stagione and data_inizio and data_fine:
         with col1:
             gender_value = st.selectbox(
                 f"Gender {key}",
-                options=gender_options,
+                options=GENDER_OPTIONS,
                 key=f"gender_{index}",
-                index=gender_options.index(preselected_gender) if preselected_gender in gender_options else 0
+                index=GENDER_OPTIONS.index(preselected_gender)
             )
 
         with col2:
-            base_color_value = st.text_input(
+            base_color_value = st.selectbox(
                 f"Base Color {key}",
-                value=preselected_base_color,
-                key=f"base_color_{index}"
+                options=BASE_COLOR_OPTIONS,
+                key=f"base_color_{index}",
+                index=BASE_COLOR_OPTIONS.index(preselected_base_color)
             )
 
         with col3:
@@ -304,75 +376,90 @@ if uploaded_files and stagione and data_inizio and data_fine:
 
         selections[(row["Articolo"], row["Colore"])] = {
             "gender": gender_value,
-            "base_color": base_color_value.strip(),
+            "base_color": base_color_value,
             "price": price_value.strip()
         }
 
     if st.button("Elabora File"):
         if any(v["gender"] == "Seleziona..." for v in selections.values()):
             st.error("Devi selezionare UOMO, DONNA o UNISEX per tutte le combinazioni!")
-        else:
-            gsheet_data = []
-            for _, row in unique_combinations.iterrows():
-                sel = selections[(row["Articolo"], row["Colore"])]
-                gsheet_data.append((
-                    row["Articolo"],
-                    row["Colore"],
-                    sel["gender"],
-                    sel["base_color"],
-                    sel["price"]
-                ))
+            st.stop()
 
-            write_to_gsheet(gsheet_data, google_sheet_url)
+        if any(v["base_color"] == "Seleziona..." for v in selections.values()):
+            st.error("Devi selezionare un Base Color per tutte le combinazioni!")
+            st.stop()
 
-            updated_memory_dict = get_existing_data(google_sheet_url)
+        invalid_prices = []
+        for (articolo, colore), values in selections.items():
+            cleaned = clean_price_value(values["price"])
+            if values["price"] != "" and cleaned == "":
+                invalid_prices.append(f"{articolo}-{colore}")
 
-            processed_dfs = []
-            for uploaded_file in uploaded_files:
-                processed_dfs.append(process_file(uploaded_file, updated_memory_dict))
+        if invalid_prices:
+            st.error("Prezzo non valido per: " + ", ".join(invalid_prices))
+            st.stop()
 
-            final_df = pd.concat(processed_dfs, ignore_index=True)
+        gsheet_data = []
+        for _, row in unique_combinations.iterrows():
+            sel = selections[(row["Articolo"], row["Colore"])]
+            gsheet_data.append((
+                row["Articolo"],
+                row["Colore"],
+                sel["gender"],
+                sel["base_color"],
+                sel["price"]
+            ))
 
-            uomo_df = final_df[
-                final_df.apply(lambda x: selections[(x['Articolo'], x['Colore'])]["gender"] == 'UOMO', axis=1)
-            ]
-            donna_df = final_df[
-                final_df.apply(lambda x: selections[(x['Articolo'], x['Colore'])]["gender"] == 'DONNA', axis=1)
-            ]
-            unisex_df = final_df[
-                final_df.apply(lambda x: selections[(x['Articolo'], x['Colore'])]["gender"] == 'UNISEX', axis=1)
-            ]
+        write_to_gsheet(gsheet_data, GOOGLE_SHEET_URL)
 
-            uomo_output = io.BytesIO()
-            donna_output = io.BytesIO()
-            unisex_output = io.BytesIO()
+        updated_memory_dict = get_existing_data(GOOGLE_SHEET_URL)
 
-            if not uomo_df.empty:
-                with pd.ExcelWriter(uomo_output, engine='xlsxwriter') as writer_uomo:
-                    write_data_in_chunks(writer_uomo, uomo_df, stagione, data_inizio, data_fine, ricarico)
-                st.download_button(
-                    label="Download File UOMO",
-                    data=uomo_output.getvalue(),
-                    file_name="uomo_processed_file.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+        processed_dfs = []
+        for uploaded_file in uploaded_files:
+            processed_dfs.append(process_file(uploaded_file, updated_memory_dict))
 
-            if not donna_df.empty:
-                with pd.ExcelWriter(donna_output, engine='xlsxwriter') as writer_donna:
-                    write_data_in_chunks(writer_donna, donna_df, stagione, data_inizio, data_fine, ricarico)
-                st.download_button(
-                    label="Download File DONNA",
-                    data=donna_output.getvalue(),
-                    file_name="donna_processed_file.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+        final_df = pd.concat(processed_dfs, ignore_index=True)
 
-            if not unisex_df.empty:
-                with pd.ExcelWriter(unisex_output, engine='xlsxwriter') as writer_unisex:
-                    write_data_in_chunks(writer_unisex, unisex_df, stagione, data_inizio, data_fine, ricarico)
-                st.download_button(
-                    label="Download File UNISEX",
-                    data=unisex_output.getvalue(),
-                    file_name="unisex_processed_file.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+        uomo_df = final_df[
+            final_df.apply(lambda x: selections[(x["Articolo"], x["Colore"])]["gender"] == "UOMO", axis=1)
+        ]
+        donna_df = final_df[
+            final_df.apply(lambda x: selections[(x["Articolo"], x["Colore"])]["gender"] == "DONNA", axis=1)
+        ]
+        unisex_df = final_df[
+            final_df.apply(lambda x: selections[(x["Articolo"], x["Colore"])]["gender"] == "UNISEX", axis=1)
+        ]
+
+        uomo_output = io.BytesIO()
+        donna_output = io.BytesIO()
+        unisex_output = io.BytesIO()
+
+        if not uomo_df.empty:
+            with pd.ExcelWriter(uomo_output, engine="xlsxwriter") as writer_uomo:
+                write_data_in_chunks(writer_uomo, uomo_df, stagione, data_inizio, data_fine, ricarico)
+            st.download_button(
+                label="Download File UOMO",
+                data=uomo_output.getvalue(),
+                file_name="uomo_processed_file.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        if not donna_df.empty:
+            with pd.ExcelWriter(donna_output, engine="xlsxwriter") as writer_donna:
+                write_data_in_chunks(writer_donna, donna_df, stagione, data_inizio, data_fine, ricarico)
+            st.download_button(
+                label="Download File DONNA",
+                data=donna_output.getvalue(),
+                file_name="donna_processed_file.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        if not unisex_df.empty:
+            with pd.ExcelWriter(unisex_output, engine="xlsxwriter") as writer_unisex:
+                write_data_in_chunks(writer_unisex, unisex_df, stagione, data_inizio, data_fine, ricarico)
+            st.download_button(
+                label="Download File UNISEX",
+                data=unisex_output.getvalue(),
+                file_name="unisex_processed_file.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
