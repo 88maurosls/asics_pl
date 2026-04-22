@@ -44,6 +44,16 @@ def clean_price_value(value):
         return None
 
 
+def clean_multiplier_value(value):
+    if pd.isna(value) or str(value).strip() == "":
+        return None
+    s = str(value).strip().replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
 def connect_to_gsheet():
     credentials = {
         "type": st.secrets["gsheet"]["type"],
@@ -200,6 +210,7 @@ def aggregate_rows_by_barcode(df):
     df["Barcode"] = df["Barcode"].fillna("").astype(str).str.strip()
     df["Qta"] = pd.to_numeric(df["Qta"], errors="coerce").fillna(0)
     df["Costo"] = pd.to_numeric(df["Costo"], errors="coerce").fillna(0)
+    df["Retail"] = pd.to_numeric(df["Retail"], errors="coerce").fillna(0)
 
     df = df[df["Qta"] > 0]
     df = df[df["Barcode"] != ""]
@@ -265,7 +276,7 @@ def aggregate_rows_by_barcode(df):
     return aggregated
 
 
-def process_file(file, memory_dict):
+def process_file(file, memory_dict, ricarico_value):
     df = read_delivery_items(file)
 
     keys = (
@@ -275,6 +286,7 @@ def process_file(file, memory_dict):
 
     base_colors = []
     prices = []
+    retails = []
 
     for key in keys:
         row_data = memory_dict.get(key, {})
@@ -288,8 +300,11 @@ def process_file(file, memory_dict):
         if parsed_price is None:
             parsed_price = 0.0
 
+        retail_value = parsed_price * ricarico_value
+
         base_colors.append("" if remembered_base_color == "Seleziona..." else remembered_base_color)
         prices.append(parsed_price)
+        retails.append(retail_value)
 
     output_df = pd.DataFrame({
         "Articolo": df["Item Code"].astype(str).str.strip(),
@@ -301,7 +316,7 @@ def process_file(file, memory_dict):
         "Made in": "",
         "Sigla Bimbo": "",
         "Costo": prices,
-        "Retail": "",
+        "Retail": retails,
         "Taglia": df["US Size"].apply(format_taglia),
         "Barcode": df["EAN Code"].fillna("").astype(str).str.strip(),
         "EAN": "",
@@ -357,7 +372,7 @@ def write_data_in_chunks(writer, df, stagione, data_inizio, data_fine, ricarico)
         worksheet.set_column("G:G", 12)
         worksheet.set_column("H:H", 12)
         worksheet.set_column("I:I", 12, number_format)
-        worksheet.set_column("J:J", 12)
+        worksheet.set_column("J:J", 12, number_format)
         worksheet.set_column("K:K", 10)
         worksheet.set_column("L:L", 20, text_format)
         worksheet.set_column("M:M", 12)
@@ -449,6 +464,11 @@ if uploaded_files and stagione and data_inizio and data_fine:
         }
 
     if st.button("Elabora File"):
+        ricarico_value = clean_multiplier_value(ricarico)
+        if ricarico_value is None:
+            st.error("RICARICO non valido.")
+            st.stop()
+
         if any(v["gender"] == "Seleziona..." for v in selections.values()):
             st.error("Devi selezionare UOMO, DONNA o UNISEX per tutte le combinazioni!")
             st.stop()
@@ -479,12 +499,11 @@ if uploaded_files and stagione and data_inizio and data_fine:
             ))
 
         write_to_gsheet(gsheet_data, GOOGLE_SHEET_URL)
-
         updated_memory_dict = get_existing_data(GOOGLE_SHEET_URL)
 
         processed_dfs = []
         for uploaded_file in uploaded_files:
-            processed_dfs.append(process_file(uploaded_file, updated_memory_dict))
+            processed_dfs.append(process_file(uploaded_file, updated_memory_dict, ricarico_value))
 
         final_df = pd.concat(processed_dfs, ignore_index=True)
 
@@ -494,14 +513,14 @@ if uploaded_files and stagione and data_inizio and data_fine:
                 axis=1
             )
         ].copy()
-        
+
         donna_df = final_df[
             final_df.apply(
                 lambda x: selections.get((x["Articolo"], x["Colore"]), {}).get("gender") == "DONNA",
                 axis=1
             )
         ].copy()
-        
+
         unisex_df = final_df[
             final_df.apply(
                 lambda x: selections.get((x["Articolo"], x["Colore"]), {}).get("gender") == "UNISEX",
