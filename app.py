@@ -319,8 +319,6 @@ data_inizio = st.date_input("Inserisci DATA INIZIO")
 data_fine = st.date_input("Inserisci DATA FINE")
 ricarico = st.text_input("Inserisci RICARICO", value="2")
 
-st.markdown("**[Scarica le Packing List da qui](https://b2b.asics.com/orders-overview/order-history)**")
-
 uploaded_files = st.file_uploader(
     "Scegli i file Excel",
     type=["xlsx", "xls"],
