@@ -419,6 +419,17 @@ def write_data_in_chunks(writer, df, stagione, data_inizio, data_fine, ricarico)
         )
 
 
+# Stato sessione per download persistenti
+if "generated_files" not in st.session_state:
+    st.session_state.generated_files = {}
+
+if "generation_done" not in st.session_state:
+    st.session_state.generation_done = False
+
+if "last_uploaded_names" not in st.session_state:
+    st.session_state.last_uploaded_names = ()
+
+
 st.title("Asics Xmag Lineare")
 
 stagione = st.text_input("Inserisci STAGIONE")
@@ -431,6 +442,13 @@ uploaded_files = st.file_uploader(
     type=["xlsx", "xls"],
     accept_multiple_files=True
 )
+
+# Reset sicuro quando cambia upload
+current_uploaded_names = tuple(f.name for f in uploaded_files) if uploaded_files else ()
+if current_uploaded_names != st.session_state.last_uploaded_names:
+    st.session_state.generated_files = {}
+    st.session_state.generation_done = False
+    st.session_state.last_uploaded_names = current_uploaded_names
 
 if uploaded_files and stagione and data_inizio and data_fine:
     memory_dict = get_existing_data(GOOGLE_SHEET_URL)
@@ -550,36 +568,62 @@ if uploaded_files and stagione and data_inizio and data_fine:
             )
         ].copy()
 
-        uomo_output = io.BytesIO()
-        donna_output = io.BytesIO()
-        unisex_output = io.BytesIO()
+        generated_files = {}
 
         if not uomo_df.empty:
+            uomo_output = io.BytesIO()
             with pd.ExcelWriter(uomo_output, engine="xlsxwriter") as writer_uomo:
                 write_data_in_chunks(writer_uomo, uomo_df, stagione, data_inizio, data_fine, ricarico)
-            st.download_button(
-                label="Download File UOMO",
-                data=uomo_output.getvalue(),
-                file_name="uomo_processed_file.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            generated_files["UOMO"] = {
+                "data": uomo_output.getvalue(),
+                "file_name": "uomo_processed_file.xlsx"
+            }
 
         if not donna_df.empty:
+            donna_output = io.BytesIO()
             with pd.ExcelWriter(donna_output, engine="xlsxwriter") as writer_donna:
                 write_data_in_chunks(writer_donna, donna_df, stagione, data_inizio, data_fine, ricarico)
-            st.download_button(
-                label="Download File DONNA",
-                data=donna_output.getvalue(),
-                file_name="donna_processed_file.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            generated_files["DONNA"] = {
+                "data": donna_output.getvalue(),
+                "file_name": "donna_processed_file.xlsx"
+            }
 
         if not unisex_df.empty:
+            unisex_output = io.BytesIO()
             with pd.ExcelWriter(unisex_output, engine="xlsxwriter") as writer_unisex:
                 write_data_in_chunks(writer_unisex, unisex_df, stagione, data_inizio, data_fine, ricarico)
-            st.download_button(
-                label="Download File UNISEX",
-                data=unisex_output.getvalue(),
-                file_name="unisex_processed_file.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+            generated_files["UNISEX"] = {
+                "data": unisex_output.getvalue(),
+                "file_name": "unisex_processed_file.xlsx"
+            }
+
+        st.session_state.generated_files = generated_files
+        st.session_state.generation_done = True
+
+if st.session_state.generation_done and st.session_state.generated_files:
+    if "UOMO" in st.session_state.generated_files:
+        st.download_button(
+            label="Download File UOMO",
+            data=st.session_state.generated_files["UOMO"]["data"],
+            file_name=st.session_state.generated_files["UOMO"]["file_name"],
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_uomo"
+        )
+
+    if "DONNA" in st.session_state.generated_files:
+        st.download_button(
+            label="Download File DONNA",
+            data=st.session_state.generated_files["DONNA"]["data"],
+            file_name=st.session_state.generated_files["DONNA"]["file_name"],
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_donna"
+        )
+
+    if "UNISEX" in st.session_state.generated_files:
+        st.download_button(
+            label="Download File UNISEX",
+            data=st.session_state.generated_files["UNISEX"]["data"],
+            file_name=st.session_state.generated_files["UNISEX"]["file_name"],
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_unisex"
+        )
