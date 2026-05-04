@@ -28,10 +28,19 @@ GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1p84nF9Tq-1ZJgQSEJcgr
 def format_taglia(size_us):
     if pd.isna(size_us):
         return ""
-    size_str = str(size_us).strip()
+
+    size_str = str(size_us).strip().upper().replace(" ", "")
+
     if size_str.endswith(".0"):
         size_str = size_str[:-2]
-    return size_str.replace(".5", "+")
+
+    if size_str.endswith(".5"):
+        return size_str[:-2] + "+"
+
+    if size_str.endswith("H"):
+        return size_str[:-1] + "+"
+
+    return size_str
 
 
 def clean_description(value):
